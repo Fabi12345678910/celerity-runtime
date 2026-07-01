@@ -40,6 +40,7 @@ if(CELERITY_ENABLE_CUDA_BACKEND)
   target_compile_definitions(celerity_backends PUBLIC "CELERITY_DETAIL_BACKEND_CUDA_ENABLED=1")
   message(STATUS "CUDA backend enabled")
 else()
+  message(STATUS "CUDA backend disabled")
   target_compile_definitions(celerity_backends PUBLIC "CELERITY_DETAIL_BACKEND_CUDA_ENABLED=0")
 endif()
 
