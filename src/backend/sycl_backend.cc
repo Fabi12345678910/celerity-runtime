@@ -385,6 +385,12 @@ std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const s
 #else
 		utils::panic("CUDA backend has not been compiled");
 #endif
+	case sycl_backend_type::rocm:
+#if CELERITY_DETAIL_BACKEND_ROCM_ENABLED
+		return std::make_unique<sycl_rocm_backend>(devices, config);
+#else
+	utils::panic("ROCm backend has not been compiled");
+#endif
 	}
 	utils::unreachable(); // LCOV_EXCL_LINE
 }

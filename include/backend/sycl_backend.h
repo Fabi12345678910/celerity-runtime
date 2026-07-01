@@ -154,8 +154,18 @@ class sycl_cuda_backend final : public sycl_backend {
 };
 #endif
 
-/// We differentiate between non-specialized and specialized Celerity SYCL backends.
-enum class sycl_backend_type { generic, cuda };
+#if CELERITY_DETAIL_BACKEND_ROCM_ENABLED
+class sycl_rocm_backend final : public sycl_backend {
+	public:
+		sycl_rocm_backend(const std::vector<sycl::device>& devices, const sycl_backend::configuration& config);
+
+		async_event enqueue_device_copy(device_id device, size_t device_lane, const void* const source_base, void* const dest_base,
+			const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override;
+};
+#endif
+
+/// We differentiate between non-specialized and specialized Celerity/Rocm SYCL backends.
+enum class sycl_backend_type { generic, cuda, rocm };
 
 /// Enumerates the SYCL backends devices are compatible with and that Celerity has been compiled with.
 /// This type implements the (nameless) concept accepted by `select_devices`.

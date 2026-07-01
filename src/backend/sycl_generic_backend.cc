@@ -68,6 +68,7 @@ sycl_generic_backend::sycl_generic_backend(const std::vector<sycl::device>& devi
 async_event sycl_generic_backend::enqueue_device_copy(const device_id device, const size_t device_lane, const void* const source_base, void* const dest_base,
     const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) //
 {
+	return async_event();
 	return enqueue_device_work(device, device_lane, [=, this](sycl::queue& queue) {
 		return sycl_backend_detail::nd_copy_device_generic(
 		    queue, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size, is_profiling_enabled());

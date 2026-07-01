@@ -50,10 +50,19 @@ set(CELERITY_ENABLE_ROCM_BACKEND FALSE)
 if(NOT CELERITY_SYCL_IMPL STREQUAL "SimSYCL")
   find_package(HIP HINTS /opt/rocm /opt/rocm/lib/cmake)
   set(CELERITY_ENABLE_ROCM_BACKEND ${HIP_FOUND})
+#  set(CELERITY_ENABLE_ROCM_BACKEND FALSE)
 endif()
 
 if(CELERITY_ENABLE_ROCM_BACKEND)
   message(STATUS "Debug: ROCm backend enabled")
+  target_compile_definitions(celerity_backends PUBLIC "CELERITY_DETAIL_BACKEND_ROCM_ENABLED=1")
+  target_sources(celerity_backends PRIVATE sycl_rocm_backend.cc)
+  target_link_libraries(celerity_backends PUBLIC hip::device)
+
+  target_compile_options(celerity_backends PRIVATE
+    -ferror-limit=1000
+  )
 else()
   message(STATUS "Debug: ROCm backend disabled")
+  target_compile_definitions(celerity_backends PUBLIC "CELERITY_DETAIL_BACKEND_ROCM_ENABLED=0")
 endif()
