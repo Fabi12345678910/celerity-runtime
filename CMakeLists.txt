@@ -359,7 +359,9 @@ if(CELERITY_ENABLE_MPI)
   target_link_libraries(celerity_runtime PUBLIC MPI::MPI_CXX)
 endif()
 
+message(STATUS "About to add backend")
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src/backend)
+message(STATUS "Added backend")
 target_link_libraries(celerity_runtime PUBLIC celerity_backends)
 
 # For debug builds, we set the CELERITY_DETAIL_ENABLE_DEBUG preprocessor flag,
