@@ -187,7 +187,6 @@ if(CELERITY_USE_MIMALLOC)
   fetch_content_from_submodule(mimalloc vendor/mimalloc)
 endif()
 
-#fetch_content_from_submodule(bs_thread_pool vendor/gpu2dcopylib/lib)
 include_directories(vendor/gpu2dcopylib/vendor)
 fetch_content_from_submodule(gpu2dcopylib vendor/gpu2dcopylib/lib)
 
@@ -345,6 +344,15 @@ endif()
 if(CELERITY_USE_MIMALLOC)
   target_link_libraries(celerity_runtime PUBLIC mimalloc)
 endif()
+
+#install(TARGETS copylib
+#    EXPORT install_exports
+#    ARCHIVE DESTINATION lib
+#    LIBRARY DESTINATION lib
+#    RUNTIME DESTINATION bin
+#    INCLUDES DESTINATION include
+#)
+target_link_libraries(celerity_runtime PUBLIC copylib)
 
 if(CELERITY_TRACY_SUPPORT)
   target_link_libraries(celerity_runtime PUBLIC Tracy::TracyClient)
