@@ -334,17 +334,17 @@ bool sycl_backend::is_profiling_enabled() const { return m_impl->config.profilin
 
 std::vector<sycl_backend_type> sycl_backend_enumerator::compatible_backends(const sycl::device& device) const {
 	std::vector<backend_type> backends{backend_type::generic};
+#if CELERITY_WORKAROUND(ACPP) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
+	if(device.get_backend() == sycl::backend::cuda) { backends.push_back(sycl_backend_type::cuda); }
+#elif CELERITY_WORKAROUND(DPCPP)
+	if(device.get_backend() == sycl::backend::ext_oneapi_cuda) { backends.push_back(sycl_backend_type::cuda); }
+#endif
 #if CELERITY_WORKAROUND(ACPP)
 	auto backend = device.get_backend();
 	if (static_cast<int>(backend) == static_cast<int>(hipsycl::rt::backend_id::hip)){
 		std::cout << "backend hip is available!\n";
 		backends.push_back(sycl_backend_type::rocm);
 	}
-#endif
-#if CELERITY_WORKAROUND(ACPP) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
-	if(device.get_backend() == sycl::backend::cuda) { backends.push_back(sycl_backend_type::cuda); }
-#elif CELERITY_WORKAROUND(DPCPP)
-	if(device.get_backend() == sycl::backend::ext_oneapi_cuda) { backends.push_back(sycl_backend_type::cuda); }
 #endif
 	assert(std::is_sorted(backends.begin(), backends.end()));
 	return backends;
@@ -366,6 +366,7 @@ bool sycl_backend_enumerator::is_specialized(backend_type type) const {
 	switch(type) {
 	case backend_type::generic: return false;
 	case backend_type::cuda: return true;
+	case backend_type::rocm: return true;
 	default: utils::unreachable(); // LCOV_EXCL_LINE
 	}
 }
@@ -374,6 +375,7 @@ int sycl_backend_enumerator::get_priority(backend_type type) const {
 	switch(type) {
 	case backend_type::generic: return 0;
 	case backend_type::cuda: return 1;
+	case backend_type::rocm: return 1;
 	default: utils::unreachable(); // LCOV_EXCL_LINE
 	}
 }
@@ -401,6 +403,7 @@ std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const s
 #endif
 	case sycl_backend_type::rocm:
 #if CELERITY_DETAIL_BACKEND_ROCM_ENABLED
+		std::cout << "creating rocm backend\n";
 		return std::make_unique<sycl_rocm_backend>(devices, config);
 #else
 	utils::panic("ROCm backend has not been compiled");
