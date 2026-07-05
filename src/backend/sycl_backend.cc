@@ -23,13 +23,9 @@
 #include <cstring>
 #include <exception>
 #include <functional>
-#include <hipSYCL/runtime/device_id.hpp>
 #include <iostream>
 #include <memory>
 #include <optional>
-#include <simsycl/sycl/enums.hh>
-#include <simsycl/sycl/info.hh>
-#include <simsycl/sycl/platform.hh>
 #include <string>
 #include <utility>
 #include <vector>
