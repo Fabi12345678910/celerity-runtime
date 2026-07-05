@@ -23,8 +23,13 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <hipSYCL/runtime/device_id.hpp>
+#include <iostream>
 #include <memory>
 #include <optional>
+#include <simsycl/sycl/enums.hh>
+#include <simsycl/sycl/info.hh>
+#include <simsycl/sycl/platform.hh>
 #include <string>
 #include <utility>
 #include <vector>
@@ -333,6 +338,13 @@ bool sycl_backend::is_profiling_enabled() const { return m_impl->config.profilin
 
 std::vector<sycl_backend_type> sycl_backend_enumerator::compatible_backends(const sycl::device& device) const {
 	std::vector<backend_type> backends{backend_type::generic};
+#if CELERITY_WORKAROUND(ACPP)
+	auto backend = device.get_backend();
+	if (static_cast<int>(backend) == static_cast<int>(hipsycl::rt::backend_id::hip)){
+		std::cout << "backend hip is available!\n";
+		backends.push_back(sycl_backend_type::rocm);
+	}
+#endif
 #if CELERITY_WORKAROUND(ACPP) && defined(SYCL_EXT_HIPSYCL_BACKEND_CUDA)
 	if(device.get_backend() == sycl::backend::cuda) { backends.push_back(sycl_backend_type::cuda); }
 #elif CELERITY_WORKAROUND(DPCPP)
@@ -346,6 +358,9 @@ std::vector<sycl_backend_type> sycl_backend_enumerator::available_backends() con
 	std::vector<backend_type> backends{backend_type::generic};
 #if CELERITY_DETAIL_BACKEND_CUDA_ENABLED
 	backends.push_back(sycl_backend_type::cuda);
+#endif
+#if CELERITY_DETAIL_BACKEND_ROCM_ENABLED
+	backends.push_back(sycl_backend_type::rocm);
 #endif
 	assert(std::is_sorted(backends.begin(), backends.end()));
 	return backends;
