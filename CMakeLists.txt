@@ -187,6 +187,10 @@ if(CELERITY_USE_MIMALLOC)
   fetch_content_from_submodule(mimalloc vendor/mimalloc)
 endif()
 
+#fetch_content_from_submodule(bs_thread_pool vendor/gpu2dcopylib/lib)
+include_directories(vendor/gpu2dcopylib/vendor)
+fetch_content_from_submodule(gpu2dcopylib vendor/gpu2dcopylib/lib)
+
 if(CELERITY_TRACY_SUPPORT)
   set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
   set(TRACY_STATIC ON CACHE BOOL "" FORCE)

@@ -372,6 +372,9 @@ int sycl_backend_enumerator::get_priority(backend_type type) const {
 namespace celerity::detail {
 
 std::unique_ptr<backend> make_sycl_backend(const sycl_backend_type type, const std::vector<sycl::device>& devices, const sycl_backend::configuration& config) {
+	if(type == sycl_backend_type::rocm){
+		std::cout<< "using rocm backend!\n";
+	}
 	assert(std::all_of(
 	    devices.begin(), devices.end(), [=](const sycl::device& d) { return utils::contains(sycl_backend_enumerator{}.compatible_backends(d), type); }));
 
