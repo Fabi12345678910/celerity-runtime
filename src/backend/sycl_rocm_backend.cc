@@ -28,7 +28,8 @@ void nd_copy_rocm_device_linear(sycl::queue& queue, const void* const source, vo
     const data_layout source_layout{source_ptr, 0, static_cast<int64_t>(elem_size), 1, 0}; // source data layout
     const data_layout target_layout{dest_ptr, source_layout}; // target data layout, same structure as the source
 
-    const copy_spec spec{copylib::device_id::host, source_layout, copylib::device_id::d0, target_layout};
+    ; 
+    const copy_spec spec{copylib::device_id::host, source_layout, copylib::device_id::d0, target_layout, copy_properties::use_2D_copy};
     COPYLIB_ENSURE(is_valid(spec), "Invalid copy spec: {}", spec); // [optional] check if the copy spec is valid
 
     
@@ -80,7 +81,7 @@ void nd_copy_rocm_device_chunked(sycl::queue& queue, const void* const source_ba
         static_cast<int64_t>(layout.strides[0].count),
         static_cast<int64_t>(layout.strides[0].dest_stride)};
 
-    const copy_spec spec{copylib::device_id::host, source_layout, copylib::device_id::d0, target_layout};
+    const copy_spec spec{copylib::device_id::host, source_layout, copylib::device_id::d0, target_layout, copy_properties::use_2D_copy};
     COPYLIB_ENSURE(is_valid(spec), "Invalid copy spec: {}", spec); // [optional] check if the copy spec is valid
 
     
