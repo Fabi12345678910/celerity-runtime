@@ -62,8 +62,8 @@ void nd_copy_rocm_device_chunked(sycl::queue& queue, const void* const source_ba
     
 
     const int64_t buffer_size = static_cast<const int64_t>(128 * 1024) * 1024; // 128 MiB for staging buffers
-    const int64_t queues_per_device = 2; // number of in-order queues per device for asynchronicity
-    executor exec(buffer_size, 2, queues_per_device); // create an executor
+    const int64_t queues_per_device = 1; // number of in-order queues per device for asynchronicity
+    executor exec(buffer_size, 1, queues_per_device); // create an executor
 
     intptr_t source_ptr = reinterpret_cast<intptr_t>(source_base);
     intptr_t dest_ptr = reinterpret_cast<intptr_t>(dest_base);
