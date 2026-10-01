@@ -27,6 +27,8 @@ endif()
 add_library(celerity_backends STATIC sycl_backend.cc sycl_generic_backend.cc)
 # We link against the RT here to get all of its transitive properties (circular linking is allowed for static libraries).
 target_link_libraries(celerity_backends PRIVATE celerity_runtime)
+# copylib does not provide install rules, so we only link it within the build tree for now.
+target_link_libraries(celerity_backends PRIVATE $<BUILD_INTERFACE:copylib::copylib>)
 add_sycl_to_target(TARGET celerity_backends SOURCES)
 
 if(CELERITY_ENABLE_CUDA_BACKEND)

@@ -212,6 +212,9 @@ if(CELERITY_USE_MIMALLOC)
   mark_include_dirs_system(mimalloc)
 endif()
 
+# Must come after AddToTarget.cmake is included, so that copylib uses our add_sycl_to_target instead of searching for SYCL itself.
+fetch_content_from_submodule(gpu3dcopylib vendor/gpu3dcopylib)
+
 if(CELERITY_TRACY_SUPPORT)
   set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
   set(TRACY_STATIC ON CACHE BOOL "" FORCE)
