@@ -22,3 +22,6 @@
 [submodule "vendor/tracy"]
 	path = vendor/tracy
 	url = https://github.com/wolfpld/tracy.git
+[submodule "vendor/gpu3dcopylib"]
+	path = vendor/gpu3dcopylib
+	url = https://github.com/Fabi12345678910/gpu3dcopylib.git
