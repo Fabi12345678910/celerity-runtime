@@ -134,6 +134,8 @@ option(CELERITY_USE_MIMALLOC "Use the mimalloc memory allocator" ${CELERITY_USE_
 
 option(CELERITY_TRACY_SUPPORT "Enable Tracy profiler integration" OFF)
 
+option(CELERITY_ENABLE_COPYLIB "Perform strided device copies through gpu3dcopylib" ON)
+
 # 3rdparty dependencies
 include(FetchContent)
 
@@ -212,8 +214,15 @@ if(CELERITY_USE_MIMALLOC)
   mark_include_dirs_system(mimalloc)
 endif()
 
-# Must come after AddToTarget.cmake is included, so that copylib uses our add_sycl_to_target instead of searching for SYCL itself.
-fetch_content_from_submodule(gpu3dcopylib vendor/gpu3dcopylib)
+if(CELERITY_ENABLE_COPYLIB)
+  # Always fetch copylib from own provided submodule
+  message(STATUS "Fetching gpu3dcopylib from submodule")
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/vendor/gpu3dcopylib/CMakeLists.txt")
+    message(FATAL_ERROR "The git submodule vendor/gpu3dcopylib is missing.\nTry running `git submodule update --init`.")
+  endif()
+  FetchContent_Declare(gpu3dcopylib URL "${PROJECT_SOURCE_DIR}/vendor/gpu3dcopylib")
+  FetchContent_MakeAvailable(gpu3dcopylib)
+endif()
 
 if(CELERITY_TRACY_SUPPORT)
   set(TRACY_FIBERS ON CACHE BOOL "" FORCE)
@@ -484,6 +493,10 @@ install(
   LIBRARY DESTINATION lib
   ARCHIVE DESTINATION lib
 )
+if(CELERITY_ENABLE_COPYLIB)
+  # celerity_backends is a static library, so applications linking it need copylib as well
+  install(TARGETS copylib EXPORT install_exports ARCHIVE DESTINATION lib)
+endif()
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/celerity-config-version.cmake"
   VERSION ${Celerity_VERSION}
