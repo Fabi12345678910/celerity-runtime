@@ -118,6 +118,9 @@ class sycl_backend : public backend {
 	async_event enqueue_host_copy(size_t host_lane, const void* const source_base, void* const dest_base, const region_layout& source_layout,
 	    const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override;
 
+	async_event enqueue_unordered_copy(memory_id source_mid, memory_id dest_mid, const void* const source_base, void* const dest_base,
+	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override;
+
 	void check_async_errors() override;
 
   protected:

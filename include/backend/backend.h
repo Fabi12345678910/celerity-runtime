@@ -75,6 +75,11 @@ class backend {
 	virtual async_event enqueue_device_copy(device_id device, size_t device_lane, const void* source_base, void* dest_base, const region_layout& source_layout,
 	    const region_layout& dest_layout, const region<3>& copy_region, size_t elem_size) = 0;
 
+	/// Enqueues an n-dimensional copy between two allocations that is not ordered with respect to any host or device lane, and therefore must only be issued
+	/// once all its dependencies have completed. Only called for strided copies involving a device if Celerity is built with CELERITY_ENABLE_COPYLIB.
+	virtual async_event enqueue_unordered_copy(memory_id source_mid, memory_id dest_mid, const void* source_base, void* dest_base,
+	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, size_t elem_size) = 0;
+
 	/// Check internal queues and panic if any asynchronous errors occurred.
 	virtual void check_async_errors() = 0;
 };

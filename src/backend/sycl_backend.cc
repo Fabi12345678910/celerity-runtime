@@ -33,6 +33,10 @@
 #include <fmt/ranges.h>
 #include <sycl/sycl.hpp>
 
+#if CELERITY_ENABLE_COPYLIB
+#include <copylib/copylib.hpp>
+#endif
+
 
 namespace celerity::detail::sycl_backend_detail {
 
@@ -106,6 +110,77 @@ void report_errors(const sycl::exception_list& errors) {
 }
 // LCOV_EXCL_STOP
 
+#if CELERITY_ENABLE_COPYLIB
+
+/// Staging memory per device, both in device and in pinned host memory. It is split among the copylib workers, and every chunk of a copy must fit one share.
+constexpr int64_t copylib_staging_bytes = int64_t{32}*1024*1024;
+constexpr int64_t copylib_queues_per_device = 2;
+constexpr int64_t copylib_chunk_bytes = copylib_staging_bytes / copylib_queues_per_device;
+
+class copylib_event final : public async_event_impl {
+  public:
+	copylib_event(copylib::copy_handle handle, const bool enable_profiling) : m_handle(std::move(handle)), m_enable_profiling(enable_profiling) {}
+
+	bool is_complete() override {
+		if(!m_handle.is_complete()) return false;
+		const auto error = m_handle.error();
+		if(error.has_value()) { utils::panic("copylib: {}", *error); }
+		return true;
+	}
+
+	std::optional<std::chrono::nanoseconds> get_native_execution_time() override { return m_enable_profiling ? m_handle.execution_time() : std::nullopt; }
+
+  private:
+	copylib::copy_handle m_handle;
+	bool m_enable_profiling;
+};
+
+/// sycl_backend assigns memory first_device_memory_id + i to device i, which the copylib executor knows as d_i.
+copylib::device_id get_copylib_device(const memory_id mid) {
+	return mid < first_device_memory_id ? copylib::device_id::host : static_cast<copylib::device_id>(static_cast<size_t>(mid) - first_device_memory_id);
+}
+
+/// Celerity's dimension 2 is copylib's d0.
+copylib::data_layout make_copylib_layout(const void* const base, const box<3>& allocation, const box<3>& copy_box, const size_t elem_size) {
+	const auto range = allocation.get_range();
+	const auto min = copy_box.get_min() - allocation.get_min();
+	const auto max = copy_box.get_max() - allocation.get_min();
+	return copylib::data_layout(reinterpret_cast<intptr_t>(base), static_cast<int64_t>(range[2] * elem_size), static_cast<int64_t>(range[1]),
+	    static_cast<int64_t>(min[2] * elem_size), static_cast<int64_t>(min[1]), static_cast<int64_t>(min[0]), static_cast<int64_t>(max[2] * elem_size),
+	    static_cast<int64_t>(max[1]), static_cast<int64_t>(max[0]));
+}
+
+async_event nd_copy_copylib(copylib::executor& executor, const memory_id source_mid, const memory_id dest_mid, const void* const source_base,
+    void* const dest_base, const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size,
+    const bool enable_profiling) //
+{
+	const auto source_did = get_copylib_device(source_mid);
+	const auto dest_did = get_copylib_device(dest_mid);
+	// Copies between device memories are performed by a single strided kernel, copies involving the host are staged into one contiguous transfer
+	const bool device_only = source_did != copylib::device_id::host && dest_did != copylib::device_id::host;
+	const copylib::copy_strategy strategy(device_only ? copylib::copy_type::direct : copylib::copy_type::staged, copylib::copy_properties::use_kernel,
+	    copylib::d2d_implementation::direct, copylib_chunk_bytes);
+
+	copylib::parallel_copy_set copy_set;
+	const auto add_copy = [&](const copylib::data_layout& source, const copylib::data_layout& dest) {
+		const auto plans = copylib::manifest_strategy(copylib::copy_spec(source_did, source, dest_did, dest), strategy, copylib::basic_staging_provider{});
+		copy_set.insert(copy_set.end(), plans.begin(), plans.end());
+	};
+	dispatch_nd_region_copy(
+	    source_base, dest_base, source_layout, dest_layout, copy_region, elem_size,
+	    [&](const void* const source, void* const dest, const box<3>& source_box, const box<3>& dest_box, const box<3>& copy_box) {
+		    add_copy(make_copylib_layout(source, source_box, copy_box, elem_size), make_copylib_layout(dest, dest_box, copy_box, elem_size));
+	    },
+	    [&](const void* const source, void* const dest, const size_t size_bytes) {
+		    add_copy(copylib::data_layout(reinterpret_cast<intptr_t>(source), 0, static_cast<int64_t>(size_bytes)),
+		        copylib::data_layout(reinterpret_cast<intptr_t>(dest), 0, static_cast<int64_t>(size_bytes)));
+	    });
+
+	return make_async_event<copylib_event>(copylib::execute_copy(executor, copy_set), enable_profiling);
+}
+
+#endif // CELERITY_ENABLE_COPYLIB
+
 } // namespace celerity::detail::sycl_backend_detail
 
 namespace celerity::detail {
@@ -141,6 +216,9 @@ struct sycl_backend::impl {
 	host_state host;
 	using configuration = sycl_backend::configuration;
 	configuration config;
+#if CELERITY_ENABLE_COPYLIB
+	std::optional<copylib::executor> copylib_executor; // created in init(), declared last to wait for in-flight copies before devices are torn down
+#endif
 
 	impl(const std::vector<sycl::device>& devices, const configuration& config)
 	    : devices(devices.begin(), devices.end()), host(devices, config.profiling), config(config) //
@@ -210,6 +288,15 @@ void sycl_backend::init() {
 	for(device_id did = 0; did < m_impl->system.devices.size(); ++did) {
 		(void)m_impl->get_device_queue(did, 0 /* lane */);
 	}
+
+#if CELERITY_ENABLE_COPYLIB
+	// copylib queues and staging memory must live in the same contexts celerity is making allocations in
+	std::vector<std::pair<sycl::device, sycl::context>> device_contexts;
+	for(const auto& device : m_impl->devices) {
+		device_contexts.emplace_back(device.sycl_device, device.sycl_context);
+	}
+	m_impl->copylib_executor.emplace(sycl_backend_detail::copylib_staging_bytes, device_contexts, sycl_backend_detail::copylib_queues_per_device);
+#endif
 }
 
 void* sycl_backend::debug_alloc(const size_t size) {
@@ -283,6 +370,18 @@ async_event sycl_backend::enqueue_host_copy(size_t host_lane, const void* const 
     const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) //
 {
 	return m_impl->get_host_queue(host_lane).submit([=] { nd_copy_host(source_base, dest_base, source_layout, dest_layout, copy_region, elem_size); });
+}
+
+async_event sycl_backend::enqueue_unordered_copy(const memory_id source_mid, const memory_id dest_mid, const void* const source_base, void* const dest_base,
+    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) //
+{
+#if CELERITY_ENABLE_COPYLIB
+	assert(m_impl->copylib_executor.has_value() && "init() must be called before enqueue_unordered_copy()");
+	return sycl_backend_detail::nd_copy_copylib(*m_impl->copylib_executor, source_mid, dest_mid, source_base, dest_base, source_layout, dest_layout,
+	    copy_region, elem_size, m_impl->config.profiling);
+#else
+	utils::panic("copylib has not been compiled");
+#endif
 }
 
 void sycl_backend::check_async_errors() {

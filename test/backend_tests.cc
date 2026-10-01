@@ -23,8 +23,15 @@ void backend_free(backend& backend, const std::optional<device_id>& device, void
 }
 
 void backend_copy(backend& backend, const std::optional<device_id>& source_device, const std::optional<device_id>& dest_device, const void* const source_base,
-    void* const dest_base, const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) {
-	if(source_device.has_value() || dest_device.has_value()) {
+    void* const dest_base, const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size,
+    const bool unordered = false) {
+	if(unordered) {
+		const auto get_memory_id = [&](const std::optional<device_id>& device) {
+			return device.has_value() ? backend.get_system_info().devices[*device].native_memory : host_memory_id;
+		};
+		test_utils::await(backend.enqueue_unordered_copy(
+		    get_memory_id(source_device), get_memory_id(dest_device), source_base, dest_base, source_layout, dest_layout, copy_region, elem_size));
+	} else if(source_device.has_value() || dest_device.has_value()) {
 		auto device = source_device.has_value() ? *source_device : *dest_device;
 		test_utils::await(backend.enqueue_device_copy(device, 0, source_base, dest_base, source_layout, dest_layout, copy_region, elem_size));
 	} else {
@@ -320,6 +327,14 @@ TEST_CASE("backend copies work correctly on all source- and destination layouts"
 	const auto direction = GENERATE(values<std::string>({"host to host", "host to device", "device to host", "device to peer", "device to itself"}));
 	CAPTURE(direction);
 
+	const auto unordered = static_cast<bool>(GENERATE(values({0, 1})));
+	CAPTURE(unordered);
+	if(unordered) {
+		if(!CELERITY_ENABLE_COPYLIB) { SKIP("Unordered copies require CELERITY_ENABLE_COPYLIB"); }
+		if(direction == "host to host") { SKIP("Unordered copies always involve a device"); }
+		backend->init(); // creates the copylib executor
+	}
+
 	std::optional<device_id> source_did; // host memory if nullopt
 	std::optional<device_id> dest_did;   // host memory if nullopt
 	if(direction == "host to device") {
@@ -372,7 +387,7 @@ TEST_CASE("backend copies work correctly on all source- and destination layouts"
 		dest_sycl_queue.memset(dest_base, 0, dest_box.get_area() * sizeof(int)).wait();
 
 		backend_copy(*backend, source_did, dest_did, source_base, dest_base, strided_layout(box_cast<3>(source_box)), strided_layout(box_cast<3>(dest_box)),
-		    box_cast<3>(copy_box), sizeof(int));
+		    box_cast<3>(copy_box), sizeof(int), unordered);
 
 		std::vector<int> actual_dest(dest_box.get_area());
 		dest_sycl_queue.memcpy(actual_dest.data(), dest_base, actual_dest.size() * sizeof(int)).wait();
