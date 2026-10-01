@@ -25,7 +25,7 @@ class out_of_order_engine {
 	enum class target {
 		/// Execution can begin immediately, no queueing takes place in the backend and no lane is assigned. Used for low-overhead instructions that do not
 		/// profit from additional concurrency such as horizons, as well as for instructions where asynchronicity is managed outside the backend (p2p transfers
-		/// through communicator and receive_arbiter).
+		/// through communicator and receive_arbiter) or outside its queues (unordered device copies).
 		immediate,
 
 		/// The instruction shall be inserted to the backend's (singular) host allocation queue. No lane is assigned. Since at least CUDA serializes the slow

@@ -56,7 +56,7 @@ struct device_kernel {
 	std::vector<void*> reduction_ptrs;
 };
 
-// base type for host_copy / device_copy only
+// base type for host_copy / device_copy / unordered_copy only
 struct common_copy {
 	const void* source_base = nullptr;
 	void* dest_base = nullptr;
@@ -73,6 +73,11 @@ struct host_copy : common_copy {
 struct device_copy : common_copy {
 	device_id device = 0;
 	size_t device_lane = 0;
+};
+
+struct unordered_copy : common_copy {
+	memory_id source_mid = 0;
+	memory_id dest_mid = 0;
 };
 
 struct reduce {
@@ -109,7 +114,8 @@ struct collective_barrier {
 } // namespace ops
 
 using operation = std::variant<ops::host_alloc, ops::device_alloc, ops::host_free, ops::device_free, ops::host_task, ops::device_kernel, ops::host_copy,
-    ops::device_copy, ops::reduce, ops::fill_identity, ops::send_outbound_pilot, ops::send_payload, ops::collective_clone, ops::collective_barrier>;
+    ops::device_copy, ops::unordered_copy, ops::reduce, ops::fill_identity, ops::send_outbound_pilot, ops::send_payload, ops::collective_clone,
+    ops::collective_barrier>;
 using operations_log = std::vector<operation>;
 
 
@@ -249,6 +255,13 @@ class mock_backend final : public backend {
 	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override //
 	{
 		m_log->push_back(ops::device_copy{{source_base, dest_base, source_layout, dest_layout, copy_region, elem_size}, device, device_lane});
+		return make_complete_event();
+	}
+
+	async_event enqueue_unordered_copy(const memory_id source_mid, const memory_id dest_mid, const void* const source_base, void* const dest_base,
+	    const region_layout& source_layout, const region_layout& dest_layout, const region<3>& copy_region, const size_t elem_size) override //
+	{
+		m_log->push_back(ops::unordered_copy{{source_base, dest_base, source_layout, dest_layout, copy_region, elem_size}, source_mid, dest_mid});
 		return make_complete_event();
 	}
 
@@ -846,6 +859,11 @@ TEST_CASE("live_executor passes correct allocation pointers to copy instructions
 	const ops::common_copy* copy = nullptr;
 	if(source_mid == host_memory_id && dest_mid == host_memory_id) {
 		copy = &std::get<ops::host_copy>(log[2]);
+	} else if(CELERITY_ENABLE_COPYLIB) { // copy_region is strided within both allocations
+		const auto& unordered_copy = std::get<ops::unordered_copy>(log[2]);
+		CHECK(unordered_copy.source_mid == source_mid);
+		CHECK(unordered_copy.dest_mid == dest_mid);
+		copy = &unordered_copy;
 	} else {
 		const auto& device_copy = std::get<ops::device_copy>(log[2]);
 		CHECK(device_copy.device == did);

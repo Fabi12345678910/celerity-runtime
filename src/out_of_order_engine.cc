@@ -2,9 +2,11 @@
 
 #include "dense_map.h"
 #include "instruction_graph.h"
+#include "nd_memory.h"
 #include "system_info.h"
 #include "tracy.h"
 #include "utils.h"
+#include "version.h"
 
 #include <queue>
 #include <unordered_map>
@@ -19,6 +21,22 @@ namespace celerity::detail::out_of_order_engine_detail {
 using target = out_of_order_engine::target;
 using lane_id = out_of_order_engine::lane_id;
 using assignment = out_of_order_engine::assignment;
+
+/// Copies that the backend can perform as one contiguous memcpy per box gain nothing from an unordered copy, but would lose eager assignment to an in-order
+/// queue. A linearized side is treated like an allocation that exactly fits the copy box, as in dispatch_nd_region_copy.
+bool is_strided_copy(const copy_instruction& cinstr) {
+	const auto get_allocation_box = [](const region_layout& layout, const box<3>& copy_box) {
+		return std::holds_alternative<strided_layout>(layout) ? std::get<strided_layout>(layout).allocation : copy_box;
+	};
+	for(const auto& copy_box : cinstr.get_copy_region().get_boxes()) {
+		const auto source_box = get_allocation_box(cinstr.get_source_layout(), copy_box);
+		const auto dest_box = get_allocation_box(cinstr.get_dest_layout(), copy_box);
+		const auto layout = layout_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
+		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), cinstr.get_element_size());
+		if(layout.num_complex_strides > 0) return true;
+	}
+	return false;
+}
 
 /// Comparison operator to make priority_queue<instruction*> return concurrent instructions in decreasing priority.
 struct instruction_priority_less {
@@ -266,11 +284,15 @@ void engine_impl::submit(const instruction* const instr) {
 		    add_eligible_devices_by_memory_id(dest_mid);
 		    add_eligible_devices_by_memory_id(source_mid);
 
-		    if(!node.eligible_devices.empty()) {
-			    node.target = target::device_queue;
-		    } else {
+		    if(node.eligible_devices.empty()) {
 			    assert(source_mid <= host_memory_id && dest_mid <= host_memory_id);
 			    node.target = target::host_queue;
+		    } else if(CELERITY_ENABLE_COPYLIB && is_strided_copy(cinstr)) {
+			    // The backend performs the copy outside its in-order queues, so it must not begin before all predecessors are complete
+			    node.eligible_devices.clear();
+			    node.target = target::immediate;
+		    } else {
+			    node.target = target::device_queue;
 		    }
 	    },
 	    [&](const device_kernel_instruction& dkinstr) {

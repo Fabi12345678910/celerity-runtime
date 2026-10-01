@@ -770,9 +770,10 @@ void live_executor::impl::issue_async(const free_instruction& finstr, const out_
 void live_executor::impl::issue_async(const copy_instruction& cinstr, const out_of_order_engine::assignment& assignment, async_instruction_state& async) {
 	CELERITY_DETAIL_TRACY_ZONE_SCOPED("executor::issue_copy", executor_issue_copy);
 
-	assert(assignment.target == out_of_order_engine::target::host_queue || assignment.target == out_of_order_engine::target::device_queue);
+	assert(assignment.target == out_of_order_engine::target::immediate || assignment.target == out_of_order_engine::target::host_queue
+	       || assignment.target == out_of_order_engine::target::device_queue);
 	assert((assignment.target == out_of_order_engine::target::device_queue) == assignment.device.has_value());
-	assert(assignment.lane.has_value());
+	assert((assignment.target == out_of_order_engine::target::immediate) != assignment.lane.has_value());
 
 	CELERITY_DETAIL_TRACE_INSTRUCTION(cinstr, "copy {} ({}) -> {} ({}); {}x{} bytes, {} bytes total", cinstr.get_source_allocation_id(),
 	    cinstr.get_source_layout(), cinstr.get_dest_allocation_id(), cinstr.get_dest_layout(), cinstr.get_copy_region(), cinstr.get_element_size(),
@@ -781,7 +782,10 @@ void live_executor::impl::issue_async(const copy_instruction& cinstr, const out_
 	const auto source_base = allocations.at(cinstr.get_source_allocation_id());
 	const auto dest_base = allocations.at(cinstr.get_dest_allocation_id());
 
-	if(assignment.device.has_value()) {
+	if(assignment.target == out_of_order_engine::target::immediate) {
+		async.event = backend->enqueue_unordered_copy(cinstr.get_source_allocation_id().get_memory_id(), cinstr.get_dest_allocation_id().get_memory_id(),
+		    source_base, dest_base, cinstr.get_source_layout(), cinstr.get_dest_layout(), cinstr.get_copy_region(), cinstr.get_element_size());
+	} else if(assignment.device.has_value()) {
 		async.event = backend->enqueue_device_copy(*assignment.device, *assignment.lane, source_base, dest_base, cinstr.get_source_layout(),
 		    cinstr.get_dest_layout(), cinstr.get_copy_region(), cinstr.get_element_size());
 	} else {
