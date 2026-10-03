@@ -8,6 +8,8 @@
 #include "utils.h"
 #include "version.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <queue>
 #include <unordered_map>
 #include <variant>
@@ -33,7 +35,9 @@ bool is_strided_copy(const copy_instruction& cinstr) {
 		const auto dest_box = get_allocation_box(cinstr.get_dest_layout(), copy_box);
 		const auto layout = layout_nd_copy(source_box.get_range(), dest_box.get_range(), copy_box.get_offset() - source_box.get_offset(),
 		    copy_box.get_offset() - dest_box.get_offset(), copy_box.get_range(), cinstr.get_element_size());
-		if(layout.num_complex_strides > 0) return true;
+		if(layout.num_complex_strides > 0
+		    && (!std::getenv("CELERITY_COPYLIB_MAX_ROW_BYTES") || layout.contiguous_size < std::strtoull(std::getenv("CELERITY_COPYLIB_MAX_ROW_BYTES"), nullptr, 10)))
+			return true;
 	}
 	return false;
 }
@@ -287,7 +291,10 @@ void engine_impl::submit(const instruction* const instr) {
 		    if(node.eligible_devices.empty()) {
 			    assert(source_mid <= host_memory_id && dest_mid <= host_memory_id);
 			    node.target = target::host_queue;
-		    } else if(CELERITY_ENABLE_COPYLIB && is_strided_copy(cinstr)) {
+		    } else if(CELERITY_ENABLE_COPYLIB && !(std::getenv("CELERITY_COPYLIB") && !std::strcmp(std::getenv("CELERITY_COPYLIB"), "off"))
+		              && cinstr.get_copy_region().get_area() * cinstr.get_element_size()
+		                     >= (std::getenv("CELERITY_COPYLIB_MIN_BYTES") ? std::strtoull(std::getenv("CELERITY_COPYLIB_MIN_BYTES"), nullptr, 10) : 0)
+		              && ((std::getenv("CELERITY_COPYLIB_ROUTE") && !std::strcmp(std::getenv("CELERITY_COPYLIB_ROUTE"), "all")) || is_strided_copy(cinstr))) {
 			    // The backend performs the copy outside its in-order queues, so it must not begin before all predecessors are complete
 			    node.eligible_devices.clear();
 			    node.target = target::immediate;

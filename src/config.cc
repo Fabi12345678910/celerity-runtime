@@ -50,6 +50,9 @@ namespace detail {
 		    {{"none", experimental::lookahead::none}, {"auto", experimental::lookahead::automatic}, {"infinite", experimental::lookahead::infinite}});
 		const auto env_tracy_mode = pref.register_option<tracy_mode>("TRACY", //
 		    {{"off", tracy_mode::off}, {"fast", tracy_mode::fast}, {"full", tracy_mode::full}});
+		for(const auto name : {"COPYLIB", "COPYLIB_ROUTE", "COPYLIB_MIN_BYTES", "COPYLIB_MAX_ROW_BYTES", "COPYLIB_STAGING_BYTES", "COPYLIB_QUEUES", "COPYLIB_CHUNK_BYTES"}) {
+			(void)pref.register_variable<std::string>(name);
+		}
 
 		pref.register_deprecated("FORCE_WG", "Support for CELERITY_FORCE_WG has been removed with Celerity 0.3.0.");
 		pref.register_deprecated("PROFILE_OCL", "CELERITY_PROFILE_OCL has been renamed to CELERITY_PROFILE_KERNEL with Celerity 0.3.0.");

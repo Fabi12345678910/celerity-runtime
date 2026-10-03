@@ -20,6 +20,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <functional>
@@ -113,9 +114,9 @@ void report_errors(const sycl::exception_list& errors) {
 #if CELERITY_ENABLE_COPYLIB
 
 /// Staging memory per device, both in device and in pinned host memory. It is split among the copylib workers, and every chunk of a copy must fit one share.
-constexpr int64_t copylib_staging_bytes = int64_t{32}*1024*1024;
-constexpr int64_t copylib_queues_per_device = 2;
-constexpr int64_t copylib_chunk_bytes = copylib_staging_bytes / copylib_queues_per_device;
+const int64_t copylib_staging_bytes = std::getenv("CELERITY_COPYLIB_STAGING_BYTES") ? std::atoll(std::getenv("CELERITY_COPYLIB_STAGING_BYTES")) : int64_t{32}*1024*1024;
+const int64_t copylib_queues_per_device = std::getenv("CELERITY_COPYLIB_QUEUES") ? std::atoll(std::getenv("CELERITY_COPYLIB_QUEUES")) : 2;
+const int64_t copylib_chunk_bytes = std::getenv("CELERITY_COPYLIB_CHUNK_BYTES") ? std::atoll(std::getenv("CELERITY_COPYLIB_CHUNK_BYTES")) : copylib_staging_bytes / copylib_queues_per_device;
 
 class copylib_event final : public async_event_impl {
   public:
@@ -157,9 +158,11 @@ async_event nd_copy_copylib(copylib::executor& executor, const memory_id source_
 	const auto source_did = get_copylib_device(source_mid);
 	const auto dest_did = get_copylib_device(dest_mid);
 	// Copies between device memories are performed by a single strided kernel, copies involving the host are staged into one contiguous transfer
-	const bool device_only = source_did != copylib::device_id::host && dest_did != copylib::device_id::host;
+	const bool device_only = (source_did != copylib::device_id::host && dest_did != copylib::device_id::host)
+	                         || (std::getenv("COPYLIB_HOST_KERNEL") && std::atoi(std::getenv("COPYLIB_HOST_KERNEL")));
 	const copylib::copy_strategy strategy(device_only ? copylib::copy_type::direct : copylib::copy_type::staged, copylib::copy_properties::use_kernel,
-	    copylib::d2d_implementation::direct, copylib_chunk_bytes);
+	    copylib::d2d_implementation::direct,
+	    device_only || (copylib_chunk_bytes > 0 && copylib_chunk_bytes <= executor.get_staging_slice_size()) ? copylib_chunk_bytes : executor.get_staging_slice_size());
 
 	copylib::parallel_copy_set copy_set;
 	const auto add_copy = [&](const copylib::data_layout& source, const copylib::data_layout& dest) {
@@ -295,7 +298,9 @@ void sycl_backend::init() {
 	for(const auto& device : m_impl->devices) {
 		device_contexts.emplace_back(device.sycl_device, device.sycl_context);
 	}
-	m_impl->copylib_executor.emplace(sycl_backend_detail::copylib_staging_bytes, device_contexts, sycl_backend_detail::copylib_queues_per_device);
+	if(!(std::getenv("CELERITY_COPYLIB") && !std::strcmp(std::getenv("CELERITY_COPYLIB"), "off"))) {
+		m_impl->copylib_executor.emplace(sycl_backend_detail::copylib_staging_bytes, device_contexts, sycl_backend_detail::copylib_queues_per_device);
+	}
 #endif
 }
 
