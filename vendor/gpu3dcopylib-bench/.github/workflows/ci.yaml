@@ -1,0 +1,122 @@
+name: CI
+
+# Runs on GitHub Actions and Gitea Actions alike; Gitea reads .github/workflows when no .gitea/workflows directory exists.
+# The runner image must provide Ubuntu 24.04 or newer packages: std::format needs GCC 13, and the build needs CMake 3.24.
+# The "Check toolchain" step fails with an explicit message if it does not.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        compiler: [g++, clang++]
+
+    env:
+      # keep in sync with .devcontainer/Dockerfile
+      SIMSYCL_REF: 7053164fb663d554f2db734989cf8c2ca78f3877
+      SIMSYCL_INSTALL: ${{ github.workspace }}/simsycl-install
+
+    steps:
+      - name: Check out copylib
+        uses: actions/checkout@v4
+
+      # Gitea runner images may run as root without sudo, and may not ship a compiler or CMake at all,
+      # so everything is installed explicitly; on GitHub-hosted runners this is a cheap no-op for most packages.
+      - name: Install build dependencies
+        run: |
+          SUDO="$(command -v sudo || true)"
+          packages="build-essential cmake ninja-build git libboost-context-dev libboost-dev"
+          if [ "${{ matrix.compiler }}" = "clang++" ]; then packages="$packages clang"; fi
+          $SUDO apt-get update
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages
+
+      - name: Check toolchain
+        run: |
+          ${{ matrix.compiler }} --version | head -n 1
+          cmake --version | head -n 1
+          cmake_version="$(cmake --version | head -n 1 | awk '{print $3}')"
+          if [ "$(printf '%s\n' 3.24 "$cmake_version" | sort -V | head -n 1)" != 3.24 ]; then
+            echo "::error::CMake $cmake_version is too old: 3.24 or newer is required. Use an Ubuntu 24.04 (or newer) runner image."
+            exit 1
+          fi
+          printf '#include <format>\nint main() { return std::format("{}", 42).size() == 2 ? 0 : 1; }\n' > "${RUNNER_TEMP:-/tmp}/format_check.cpp"
+          if ! ${{ matrix.compiler }} -std=c++20 "${RUNNER_TEMP:-/tmp}/format_check.cpp" -o "${RUNNER_TEMP:-/tmp}/format_check"; then
+            echo "::error::${{ matrix.compiler }} has no usable std::format: GCC 13 (or its libstdc++) or newer is required. Use an Ubuntu 24.04 (or newer) runner image."
+            exit 1
+          fi
+
+      # SimSYCL is only the SYCL implementation used in CI, it is not a design target for the library.
+      # Its build takes a few minutes, so the install prefix is cached per compiler / build type.
+      - name: Cache SimSYCL
+        id: cache-simsycl
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SIMSYCL_INSTALL }}
+          key: simsycl-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ env.SIMSYCL_REF }}
+
+      - name: Build and install SimSYCL
+        if: steps.cache-simsycl.outputs.cache-hit != 'true'
+        run: |
+          src="${RUNNER_TEMP:-/tmp}/simsycl"
+          rm -rf "$src"
+          git clone https://github.com/celerity/simsycl.git "$src"
+          git -C "$src" checkout --detach "$SIMSYCL_REF"
+          cmake -S "$src" -B "$src/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DCMAKE_INSTALL_PREFIX="$SIMSYCL_INSTALL"
+          cmake --build "$src/build" --target install
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DCMAKE_PREFIX_PATH="$SIMSYCL_INSTALL" \
+            -DCOPYLIB_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # Test cases covering functions that are not implemented yet are tagged [!mayfail]: they run and report their
+      # failures without failing the build. This step reports the counts and the tagged cases that already pass.
+      # The report goes to the job log, and additionally to the job summary where the CI renders one
+      # (GitHub, and Gitea from 1.27 on).
+      - name: Test progress summary
+        if: always()
+        run: |
+          if [ ! -x ./build/tests/all_tests ]; then
+            echo "No test binary, the build failed before the tests were built."
+            exit 0
+          fi
+          report="$(mktemp)"
+          passing_mayfail="$(tests/passing_mayfail.sh ./build/tests/all_tests)"
+          {
+            echo "### Test progress (${{ matrix.compiler }}, ${{ matrix.build_type }})"
+            echo ''
+            echo '```'
+            ./build/tests/all_tests | grep -E '^(test cases|assertions):|^All tests passed'
+            echo '```'
+            echo ''
+            echo '#### Cases tagged `[!mayfail]` that pass'
+            echo ''
+            if [ -z "$passing_mayfail" ]; then
+              echo 'None.'
+            else
+              echo 'Either their functions are implemented and the tag should be removed, or they pass for the wrong reason:'
+              echo ''
+              echo "$passing_mayfail" | sed 's/^/- /'
+            fi
+          } > "$report"
+          cat "$report"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
