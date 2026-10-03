@@ -539,9 +539,24 @@ class handler {
 			constexpr int sycl_dims = std::max(1, Dims);
 			if constexpr(std::is_same_v<KernelFlavor, detail::simple_kernel_flavor>) {
 				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_range.get_range()));
-				detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, sycl_global_range,
-				    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])...,
-				    detail::bind_simple_kernel(kernel, global_range, global_offset, detail::id_cast<Dims>(execution_range.get_offset())));
+				if constexpr(CELERITY_WORKAROUND(ACPP) && Dims >= 2) {
+					const auto chunk_offset = detail::id_cast<Dims>(execution_range.get_offset());
+					detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, sycl::range<1>(sycl_global_range.size()),
+					    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])..., [=](sycl::item<1> s_item, auto&... reducers) {
+						    size_t l = s_item.get_linear_id();
+						    sycl::id<Dims> s_id;
+						    for(int d = Dims - 1; d > 0; --d) {
+							    s_id[d] = l % sycl_global_range[d];
+							    l /= sycl_global_range[d];
+						    }
+						    s_id[0] = l;
+						    detail::invoke_kernel(kernel, s_id, global_range, global_offset, chunk_offset, reducers...);
+					    });
+				} else {
+					detail::invoke_sycl_parallel_for<KernelName>(sycl_cgh, sycl_global_range,
+					    detail::make_sycl_reduction(reductions, reduction_ptrs[ReductionIndices])...,
+					    detail::bind_simple_kernel(kernel, global_range, global_offset, detail::id_cast<Dims>(execution_range.get_offset())));
+				}
 			} else if constexpr(std::is_same_v<KernelFlavor, detail::nd_range_kernel_flavor>) {
 				const auto sycl_global_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(execution_range.get_range()));
 				const auto sycl_local_range = sycl::range<sycl_dims>(detail::range_cast<sycl_dims>(local_range));
