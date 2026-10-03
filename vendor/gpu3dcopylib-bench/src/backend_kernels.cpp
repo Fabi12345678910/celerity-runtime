@@ -2,6 +2,7 @@
 
 #include <copylib/support.hpp> // IWYU pragma: keep
 
+#include <cstdlib>
 #include <limits>
 
 namespace copylib::detail {
@@ -41,11 +42,12 @@ sycl::event copy_with_kernel_impl(sycl::queue& q, const copy_spec& spec, IdxType
 	// the global range is rounded up to whole work groups, so the work items past the window return right away
 	const IdxType extent = spec.source_layout.window_length() / sizeof(T);
 	const size_t wg_size = preferred_wg_size;
-	const sycl::nd_range<1> ndr{(static_cast<size_t>(extent) + wg_size - 1) / wg_size * wg_size, wg_size};
+	const IdxType per_item = std::getenv("COPYLIB_ELEMS_PER_ITEM") ? std::atoi(std::getenv("COPYLIB_ELEMS_PER_ITEM")) : 1;
+	const sycl::nd_range<1> ndr{(static_cast<size_t>(extent) + wg_size * per_item - 1) / (wg_size * per_item) * wg_size, wg_size};
 	return q.parallel_for(ndr, [=](sycl::nd_item<1> idx) {
-		const IdxType i = idx.get_global_id(0);
-		if(i >= extent) { return; }
-		tgt[tgt_layout.offset_at(tgt_start + i)] = src[src_layout.offset_at(src_start + i)];
+		for(IdxType n = 0, i = idx.get_group(0) * wg_size * per_item + idx.get_local_id(0); n < per_item && i < extent; n++, i += wg_size) {
+			tgt[tgt_layout.offset_at(tgt_start + i)] = src[src_layout.offset_at(src_start + i)];
+		}
 	});
 }
 
@@ -67,7 +69,7 @@ sycl::event copy_with_kernel(sycl::queue& q, const copy_spec& spec, int32_t pref
 	// the widest element that tiles both windows: copy_alignment covers the rows, strides and offsets of both sides and the
 	// shift between the windows, which leaves the window's own start and length, as chunks may start and end unaligned, and
 	// both bases, which planning does not know
-	int64_t elem_size = copy_alignment(spec);
+	int64_t elem_size = std::min<int64_t>(copy_alignment(spec), std::getenv("COPYLIB_MAX_ELEM_SIZE") ? std::atoi(std::getenv("COPYLIB_MAX_ELEM_SIZE")) : 64);
 	while(spec.source_layout.start % elem_size != 0 || spec.source_layout.window_length() % elem_size != 0 || spec.source_layout.base % elem_size != 0
 	      || spec.target_layout.base % elem_size != 0) {
 		elem_size /= 2;
