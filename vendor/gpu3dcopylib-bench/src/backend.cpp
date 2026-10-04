@@ -178,87 +178,50 @@ namespace {
 		return wg_size;
 	}
 
-	struct host_cursor {
-		std::byte* ptr;
-		int64_t w, left, h, rows_left, row_jump, plane_jump;
-		explicit host_cursor(const data_layout& l)
-		    : ptr(l.base_ptr() + l.offset_at(l.start)), w(l.d0_end_offset - l.d0_start_offset), left(w - l.start % w), h(l.d1_end_offset - l.d1_start_offset),
-		      rows_left(h - l.start / w % h), row_jump(l.d0_stride - w), plane_jump((l.d1_stride - h + 1) * l.d0_stride - w) {}
-		void advance(int64_t n) {
-			ptr += n;
-			if((left -= n) > 0) { return; }
-			left = w;
-			if(--rows_left > 0) {
-				ptr += row_jump;
-			} else {
-				rows_left = h;
-				ptr += plane_jump;
-			}
-		}
-	};
-
 	template <int64_t W, bool Pack>
-	void copy_rows_fixed(host_cursor& cur, std::byte*& contiguous, int64_t rows) {
-		const int64_t w = W ? W : cur.w;
-		const int64_t pitch = cur.row_jump + w;
-		std::byte* s = cur.ptr;
-		std::byte* c = contiguous;
-		while(rows > 0) {
-			const int64_t n = std::min(rows, cur.rows_left);
-			for(int64_t r = 0; r < n; ++r, s += pitch, c += w) {
-				Pack ? std::memcpy(c, s, w) : std::memcpy(s, c, w);
-			}
-			rows -= n;
-			if((cur.rows_left -= n) == 0) {
-				cur.rows_left = cur.h;
-				s += cur.plane_jump - cur.row_jump;
-			}
+	void copy_rows_fixed(std::byte* s, int64_t pitch, int64_t w, std::byte* c, int64_t rows) {
+		const int64_t width = W ? W : w;
+		for(int64_t r = 0; r < rows; ++r, s += pitch, c += width) {
+			Pack ? std::memcpy(c, s, width) : std::memcpy(s, c, width);
 		}
-		cur.ptr = s;
-		contiguous = c;
 	}
 
 	template <bool Pack>
-	void copy_rows(host_cursor& cur, std::byte*& contiguous, int64_t rows) {
-		switch(cur.w) {
-		case 1: return copy_rows_fixed<1, Pack>(cur, contiguous, rows);
-		case 2: return copy_rows_fixed<2, Pack>(cur, contiguous, rows);
-		case 4: return copy_rows_fixed<4, Pack>(cur, contiguous, rows);
-		case 8: return copy_rows_fixed<8, Pack>(cur, contiguous, rows);
-		case 12: return copy_rows_fixed<12, Pack>(cur, contiguous, rows);
-		case 16: return copy_rows_fixed<16, Pack>(cur, contiguous, rows);
-		case 24: return copy_rows_fixed<24, Pack>(cur, contiguous, rows);
-		case 32: return copy_rows_fixed<32, Pack>(cur, contiguous, rows);
-		case 64: return copy_rows_fixed<64, Pack>(cur, contiguous, rows);
-		default: return copy_rows_fixed<0, Pack>(cur, contiguous, rows);
+	void copy_rows(std::byte* s, int64_t pitch, int64_t w, std::byte* c, int64_t rows) {
+		switch(w) {
+		case 1: return copy_rows_fixed<1, Pack>(s, pitch, w, c, rows);
+		case 2: return copy_rows_fixed<2, Pack>(s, pitch, w, c, rows);
+		case 4: return copy_rows_fixed<4, Pack>(s, pitch, w, c, rows);
+		case 8: return copy_rows_fixed<8, Pack>(s, pitch, w, c, rows);
+		case 12: return copy_rows_fixed<12, Pack>(s, pitch, w, c, rows);
+		case 16: return copy_rows_fixed<16, Pack>(s, pitch, w, c, rows);
+		case 24: return copy_rows_fixed<24, Pack>(s, pitch, w, c, rows);
+		case 32: return copy_rows_fixed<32, Pack>(s, pitch, w, c, rows);
+		case 64: return copy_rows_fixed<64, Pack>(s, pitch, w, c, rows);
+		default: return copy_rows_fixed<0, Pack>(s, pitch, w, c, rows);
 		}
 	}
 
 	void copy_host_to_host(const copy_spec& spec) {
-		int64_t remaining = spec.source_layout.window_length();
-		host_cursor src(spec.source_layout);
-		host_cursor dst(spec.target_layout);
-		const auto step = [&] {
-			const int64_t n = std::min({src.left, dst.left, remaining});
-			std::memcpy(dst.ptr, src.ptr, n);
-			src.advance(n);
-			dst.advance(n);
-			remaining -= n;
-		};
-		const bool src_contiguous = src.left >= remaining;
-		if(!src_contiguous && dst.left < remaining) {
-			while(remaining > 0) { step(); }
+		const auto& src = spec.source_layout;
+		const auto& dst = spec.target_layout;
+		const bool pack = dst.is_window_contiguous();
+		const auto& strided = pack ? src : dst;
+		const auto& contiguous = pack ? dst : src;
+		const int64_t w = strided.d0_end_offset - strided.d0_start_offset;
+		const int64_t h = strided.d1_end_offset - strided.d1_start_offset;
+		if(src.is_window_contiguous() == pack || strided.start % w != 0 || strided.end % w != 0) {
+			for_each_copy_run(spec, [&](int64_t s, int64_t t, int64_t n) { std::memcpy(dst.base_ptr() + t, src.base_ptr() + s, n); });
 			return;
 		}
-		host_cursor& strided = src_contiguous ? dst : src;
-		std::byte*& contiguous = src_contiguous ? src.ptr : dst.ptr;
-		if(strided.left != strided.w || strided.left >= remaining) { step(); }
-		if(remaining >= strided.w) {
-			const int64_t rows = remaining / strided.w;
-			src_contiguous ? copy_rows<false>(strided, contiguous, rows) : copy_rows<true>(strided, contiguous, rows);
-			remaining -= rows * strided.w;
+		std::byte* c = contiguous.base_ptr() + contiguous.offset_at(contiguous.start);
+		for(int64_t row = strided.start / w; row < strided.end / w;) {
+			const int64_t rows = std::min(strided.end / w, (row / h + 1) * h) - row;
+			std::byte* s = strided.base_ptr() + strided.offset_at(row * w);
+			pack ? copy_rows<true>(s, strided.d0_stride, w, c, rows) : copy_rows<false>(s, strided.d0_stride, w, c, rows);
+			c += rows * w;
+			row += rows;
 		}
-		if(remaining > 0) { step(); }
 	}
 
 } // namespace
