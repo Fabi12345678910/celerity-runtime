@@ -51,6 +51,9 @@ namespace detail {
 		const auto env_tracy_mode = pref.register_option<tracy_mode>("TRACY", //
 		    {{"off", tracy_mode::off}, {"fast", tracy_mode::fast}, {"full", tracy_mode::full}});
 
+		// read where copylib is used (copylib_enabled), registered here to be accepted and validated like every other CELERITY_ variable
+		(void)pref.register_option<bool>("COPYLIB", {{"on", true}, {"off", false}});
+
 		pref.register_deprecated("FORCE_WG", "Support for CELERITY_FORCE_WG has been removed with Celerity 0.3.0.");
 		pref.register_deprecated("PROFILE_OCL", "CELERITY_PROFILE_OCL has been renamed to CELERITY_PROFILE_KERNEL with Celerity 0.3.0.");
 		pref.register_deprecated("GRAPH_PRINT_MAX_VERTS", "Support for CELERITY_GRAPH_PRINT_MAX_VERTS has been removed with Celerity 0.5.0.\n"

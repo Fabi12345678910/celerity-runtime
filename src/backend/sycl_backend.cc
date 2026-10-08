@@ -4,6 +4,7 @@
 #include "backend/backend.h"
 #include "cgf.h"
 #include "closure_hydrator.h"
+#include "copylib_enabled.h"
 #include "dense_map.h"
 #include "grid.h"
 #include "named_threads.h"
@@ -112,10 +113,15 @@ void report_errors(const sycl::exception_list& errors) {
 
 #if CELERITY_ENABLE_COPYLIB
 
+/// COPYLIB_HOST_KERNEL=1 selects a different strategy for copies involving the host: instead of staging them through a contiguous transfer, a kernel accesses the
+/// pinned host memory directly. This pays off on systems where the device reads host memory fast (APUs, coherent links), but collapses for strided host memory on PCIe.
+const bool copylib_host_kernel = std::getenv("COPYLIB_HOST_KERNEL") && std::atoi(std::getenv("COPYLIB_HOST_KERNEL"));
+
 /// Staging memory per device, both in device and in pinned host memory. It is split among the copylib workers, and every chunk of a copy must fit one share.
-constexpr int64_t copylib_staging_bytes = int64_t{32}*1024*1024;
-constexpr int64_t copylib_queues_per_device = 2;
-constexpr int64_t copylib_chunk_bytes = copylib_staging_bytes / copylib_queues_per_device;
+constexpr int64_t copylib_staging_bytes = int64_t{32} * 1024 * 1024;
+/// Queues per device, which is also the number of copylib workers, and the size of the chunks they copy one at a time.
+const int64_t copylib_queues_per_device = copylib_host_kernel ? 2 : 4;
+const int64_t copylib_chunk_bytes = (copylib_host_kernel ? 4 : 1) * int64_t{1024} * 1024;
 
 class copylib_event final : public async_event_impl {
   public:
@@ -157,8 +163,10 @@ async_event nd_copy_copylib(copylib::executor& executor, const memory_id source_
 	const auto source_did = get_copylib_device(source_mid);
 	const auto dest_did = get_copylib_device(dest_mid);
 	// Copies between device memories are performed by a single strided kernel, copies involving the host are staged into one contiguous transfer
+	// unless a kernel accesses the host memory directly
 	const bool device_only = source_did != copylib::device_id::host && dest_did != copylib::device_id::host;
-	const copylib::copy_strategy strategy(device_only ? copylib::copy_type::direct : copylib::copy_type::staged, copylib::copy_properties::use_kernel,
+	const auto properties = copylib_host_kernel ? copylib::copy_properties::use_kernel | copylib::copy_properties::use_host_kernel : copylib::copy_properties::use_kernel;
+	const copylib::copy_strategy strategy(device_only || copylib_host_kernel ? copylib::copy_type::direct : copylib::copy_type::staged, properties,
 	    copylib::d2d_implementation::direct, copylib_chunk_bytes);
 
 	copylib::parallel_copy_set copy_set;
@@ -295,7 +303,9 @@ void sycl_backend::init() {
 	for(const auto& device : m_impl->devices) {
 		device_contexts.emplace_back(device.sycl_device, device.sycl_context);
 	}
-	m_impl->copylib_executor.emplace(sycl_backend_detail::copylib_staging_bytes, device_contexts, sycl_backend_detail::copylib_queues_per_device);
+	if(copylib_enabled()) {
+		m_impl->copylib_executor.emplace(sycl_backend_detail::copylib_staging_bytes, device_contexts, sycl_backend_detail::copylib_queues_per_device);
+	}
 #endif
 }
 

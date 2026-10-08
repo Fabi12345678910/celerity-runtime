@@ -1,5 +1,6 @@
 #include "out_of_order_engine.h"
 
+#include "copylib_enabled.h"
 #include "dense_map.h"
 #include "instruction_graph.h"
 #include "nd_memory.h"
@@ -287,7 +288,7 @@ void engine_impl::submit(const instruction* const instr) {
 		    if(node.eligible_devices.empty()) {
 			    assert(source_mid <= host_memory_id && dest_mid <= host_memory_id);
 			    node.target = target::host_queue;
-		    } else if(CELERITY_ENABLE_COPYLIB && is_strided_copy(cinstr)) {
+		    } else if(copylib_enabled() && is_strided_copy(cinstr)) {
 			    // The backend performs the copy outside its in-order queues, so it must not begin before all predecessors are complete
 			    node.eligible_devices.clear();
 			    node.target = target::immediate;
