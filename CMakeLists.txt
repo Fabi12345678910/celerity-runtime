@@ -217,10 +217,10 @@ endif()
 if(CELERITY_ENABLE_COPYLIB)
   # Always fetch copylib from own provided submodule
   message(STATUS "Fetching gpu3dcopylib from submodule")
-  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/vendor/gpu3dcopylib/CMakeLists.txt")
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/vendor/gpu3dcopylib-bench/CMakeLists.txt")
     message(FATAL_ERROR "The git submodule vendor/gpu3dcopylib is missing.\nTry running `git submodule update --init`.")
   endif()
-  FetchContent_Declare(gpu3dcopylib URL "${PROJECT_SOURCE_DIR}/vendor/gpu3dcopylib")
+  FetchContent_Declare(gpu3dcopylib URL "${PROJECT_SOURCE_DIR}/vendor/gpu3dcopylib-bench")
   FetchContent_MakeAvailable(gpu3dcopylib)
 endif()
 
