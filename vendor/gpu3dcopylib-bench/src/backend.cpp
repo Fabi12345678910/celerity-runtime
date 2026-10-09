@@ -265,15 +265,20 @@ executor::executor(int64_t buffer_size, const std::vector<sycl::device>& devices
     : executor(buffer_size, with_default_contexts(devices), queues_per_device) {}
 
 executor::executor(int64_t buffer_size, const std::vector<std::pair<sycl::device, sycl::context>>& device_contexts, int64_t queues_per_device)
-    : buffer_size(buffer_size), pool(checked_queues_per_device(queues_per_device), [](std::size_t) {
-	      // the workers may run anywhere: they would otherwise inherit the affinity of the thread constructing the executor, which
-	      // can be pinned to a single core shared with a busy caller
-	      cpu_set_t all_cpus;
-	      CPU_ZERO(&all_cpus);
-	      for(unsigned cpu = 0; cpu < std::thread::hardware_concurrency(); cpu++) {
-		      CPU_SET(cpu, &all_cpus);
+    : buffer_size(buffer_size), pool(checked_queues_per_device(queues_per_device), [](const std::size_t idx) {
+	      const char* const worker_cpus = std::getenv("COPYLIB_WORKER_CPUS");
+	      if(worker_cpus && !std::strcmp(worker_cpus, "inherit")) return;
+	      const auto cpus = utils::split(worker_cpus ? worker_cpus : "all", ',');
+	      cpu_set_t mask;
+	      CPU_ZERO(&mask);
+	      if(cpus[0] == "all") {
+		      for(unsigned cpu = 0; cpu < std::thread::hardware_concurrency(); cpu++) {
+			      CPU_SET(cpu, &mask);
+		      }
+	      } else {
+		      CPU_SET(std::atoi(cpus[idx % cpus.size()].c_str()), &mask);
 	      }
-	      pthread_setaffinity_np(pthread_self(), sizeof(all_cpus), &all_cpus);
+	      pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
       }) {
 	COPYLIB_ENSURE(!device_contexts.empty(), "Need at least one device");
 	COPYLIB_ENSURE(device_contexts.size() <= static_cast<size_t>(device_id::count), "Too many devices: {} (at most {})", device_contexts.size(),
@@ -350,7 +355,9 @@ executor::executor(int64_t buffer_size, const std::vector<std::pair<sycl::device
 			    "Failed to set CPU affinity to CPU {} for device {}", *dev.host_staging_cpu, dev_id);
 		}
 
-		dev.host_staging_buffer = sycl::aligned_alloc_host<std::byte>(detail::staging_alignment, staging_bytes, q);
+		dev.host_staging_buffer = std::getenv("COPYLIB_HOST_STAGING") && !std::strcmp(std::getenv("COPYLIB_HOST_STAGING"), "pageable")
+		                              ? static_cast<std::byte*>(std::aligned_alloc(detail::staging_alignment, staging_bytes))
+		                              : sycl::aligned_alloc_host<std::byte>(detail::staging_alignment, staging_bytes, q);
 		COPYLIB_ENSURE(dev.host_staging_buffer != nullptr, "Failed to allocate host staging buffer");
 		std::memset(dev.host_staging_buffer, 0, staging_bytes); // first touch, placing the pages close to the CPU pinned above, if any
 
@@ -358,14 +365,14 @@ executor::executor(int64_t buffer_size, const std::vector<std::pair<sycl::device
 	}
 	peer_access_available = enable_peer_access(devices);
 
-	// the first use of a kernel width or of fresh staging memory is slow (JIT compilation, page mapping), which would show up in the first copy
-	for(auto& dev : devices) {
-		dev.queues[0].memset(dev.staging_buffer, 0, staging_bytes).wait();
-		const auto base = reinterpret_cast<intptr_t>(dev.staging_buffer);
-		for(int64_t size = 1; size <= detail::max_kernel_element_bytes; size *= 2) {
-			detail::copy_with_kernel(
-			    dev.queues[0], copy_spec(device_id::d0, data_layout(base, 0, size), device_id::d0, data_layout(base, 64, size)), preferred_wg_size)
-			    .wait();
+	if(!std::getenv("COPYLIB_PRELOAD_KERNELS") || std::atoi(std::getenv("COPYLIB_PRELOAD_KERNELS"))) {
+		for(auto& dev : devices) {
+			dev.queues[0].memset(dev.staging_buffer, 0, staging_bytes).wait();
+			const auto base = reinterpret_cast<intptr_t>(dev.staging_buffer);
+			for(int64_t size = 1; size <= 64; size *= 2) {
+				detail::copy_with_kernel(dev.queues[0], copy_spec(device_id::d0, data_layout(base, 0, size), device_id::d0, data_layout(base, 64, size)), preferred_wg_size)
+				    .wait();
+			}
 		}
 	}
 }
@@ -379,7 +386,11 @@ detail::device::~device() {
 
 	auto& q = queues[0];
 	sycl::free(staging_buffer, q);
-	sycl::free(host_staging_buffer, q);
+	if(std::getenv("COPYLIB_HOST_STAGING") && !std::strcmp(std::getenv("COPYLIB_HOST_STAGING"), "pageable")) {
+		std::free(host_staging_buffer);
+	} else {
+		sycl::free(host_staging_buffer, q);
+	}
 }
 
 sycl::queue& executor::get_queue(device_id id, int64_t queue_idx) {
@@ -418,7 +429,11 @@ namespace detail {
 
 		//  for host <-> host copies, use memcpy
 		if(spec.source_device == device_id::host && spec.target_device == device_id::host) {
-			if(last_device != device_id::host && last_device != device_id::count) { last.event.wait_and_throw(); }
+			if(last_device != device_id::host && last_device != device_id::count) {
+				while(std::getenv("COPYLIB_WAIT") && !std::strcmp(std::getenv("COPYLIB_WAIT"), "poll")
+				      && last.event.get_info<sycl::info::event::command_execution_status>() != sycl::info::event_command_status::complete) {}
+				last.event.wait_and_throw();
+			}
 			copy_host_to_host(spec);
 			return {{device_id::host, 0}, {}};
 		}
@@ -428,7 +443,11 @@ namespace detail {
 		const device_id device_to_use = desired_device == device_id::host ? fallback_device : desired_device;
 		const executor::target target{device_to_use, queue_idx};
 
-		if(last_target != target && last_device != device_id::count && last_device != device_id::host) { last.event.wait_and_throw(); }
+		if(last_target != target && last_device != device_id::count && last_device != device_id::host) {
+			while(std::getenv("COPYLIB_WAIT") && !std::strcmp(std::getenv("COPYLIB_WAIT"), "poll")
+			      && last.event.get_info<sycl::info::event::command_execution_status>() != sycl::info::event_command_status::complete) {}
+			last.event.wait_and_throw();
+		}
 
 		auto& queue = exec.get_queue(target);
 
@@ -439,7 +458,9 @@ namespace detail {
 		}
 
 		// technically, one could use a kernel for copies involving the host on some hw/sw stacks, but we'll ignore that for now
-		if(spec.properties & copy_properties::use_kernel && spec.source_device != device_id::host && spec.target_device != device_id::host) {
+		if(spec.properties & copy_properties::use_kernel
+		    && ((std::getenv("COPYLIB_HOST_KERNEL") && std::atoi(std::getenv("COPYLIB_HOST_KERNEL")))
+		        || (spec.source_device != device_id::host && spec.target_device != device_id::host))) {
 			return {target, copy_with_kernel(queue, spec, exec.get_preferred_wg_size())};
 		}
 		// the queue is in order, so the last copy completes after all the others
@@ -504,9 +525,17 @@ namespace {
 		detail::step_result last;
 		for(auto spec : plan) {
 			fulfiller.fulfill(spec);
+			const auto start = std::chrono::steady_clock::now();
 			last = detail::execute_copy(exec, spec, queue_idx, alternate_device, last);
+			if(std::getenv("COPYLIB_TRACE") && std::atoi(std::getenv("COPYLIB_TRACE"))) {
+				last.event.wait_and_throw();
+				utils::err_print("copylib trace: {} -> {}, {} bytes in {} ms\n", spec.source_device, spec.target_device, spec.source_layout.window_length(),
+				    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			}
 		}
 		// the plan is done only once its last step is; earlier steps are covered by the waits between steps and queue order
+		while(std::getenv("COPYLIB_WAIT") && !std::strcmp(std::getenv("COPYLIB_WAIT"), "poll")
+		      && last.event.get_info<sycl::info::event::command_execution_status>() != sycl::info::event_command_status::complete) {}
 		last.event.wait_and_throw();
 	}
 
@@ -567,6 +596,7 @@ std::optional<std::chrono::nanoseconds> copy_handle::execution_time() const {
 
 copy_handle execute_copy(executor& exec, const parallel_copy_set& set) {
 	COPYLIB_ENSURE(is_valid(set), "Invalid copy set: {}", set);
+	if(std::getenv("COPYLIB_TRACE") && std::atoi(std::getenv("COPYLIB_TRACE"))) { utils::err_print("copylib trace: copy of {} plans\n", set.size()); }
 	// every plan has to fit into one worker's slice of staging; checked here, so that a plan too large throws from this call
 	for(const auto& plan : set) {
 		detail::staging_fulfiller fits(exec, 0);
@@ -592,14 +622,25 @@ copy_handle execute_copy(executor& exec, const parallel_copy_set& set) {
 	// the workers own the plans and share the state, since the call returns before the plans have run
 	const auto shared = std::make_shared<shared_plans>();
 	shared->plans = set;
-	const int64_t workers = std::min(exec.get_queues_per_device(), total_plans);
+	const int64_t parts_count = exec.get_queues_per_device();
+	const int64_t workers = std::min(parts_count, total_plans);
+	const char* order = std::getenv("COPYLIB_PLAN_ORDER");
+	const bool dynamic = !order || !std::strcmp(order, "dynamic");
+	const bool interleaved = order && !std::strcmp(order, "interleaved");
 	for(int64_t part = 0; part < workers; part++) {
-		exec.pool.detach_task([&exec, state, part, shared] {
+		exec.pool.detach_task([&exec, state, part, shared, parts_count, dynamic, interleaved] {
 			// staging goes into this worker's own slice, from its start for every plan: the worker runs one plan at a time and
 			// waits for it to finish, and no other worker uses the slice, so calls in flight together never share staging
 			const auto slice = static_cast<int64_t>(BS::this_thread::get_index().value());
+			const int64_t total = shared->plans.size();
+			const int64_t first = part * (total / parts_count) + std::min(part, total % parts_count);
+			const int64_t count = total / parts_count + (part < total % parts_count ? 1 : 0);
+			const auto next_index = [&](const int64_t k) -> int64_t {
+				const int64_t i = dynamic ? shared->next++ : interleaved ? part + k * parts_count : first + k;
+				return (dynamic || interleaved ? i < total : k < count) ? i : -1;
+			};
 			int64_t plan_idx = 0;
-			for(int64_t i = shared->next++; i < static_cast<int64_t>(shared->plans.size()); i = shared->next++) {
+			for(int64_t i = next_index(0); i >= 0; i = next_index(++plan_idx)) {
 				const auto& plan = shared->plans[i];
 				const bool use_alternate_device = plan.size() == 1 && plan_idx % 2 == 1;
 				try {
@@ -608,7 +649,6 @@ copy_handle execute_copy(executor& exec, const parallel_copy_set& set) {
 				} catch(const std::exception& e) { //
 					state->fail(e.what());
 				} catch(...) { state->fail("unknown exception"); }
-				plan_idx++;
 				state->finish_plan();
 			}
 		});
