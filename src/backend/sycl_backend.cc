@@ -114,8 +114,8 @@ void report_errors(const sycl::exception_list& errors) {
 
 /// Staging memory per device, both in device and in pinned host memory. It is split among the copylib workers, and every chunk of a copy must fit one share.
 constexpr int64_t copylib_staging_bytes = int64_t{32}*1024*1024;
-constexpr int64_t copylib_queues_per_device = 2;
-constexpr int64_t copylib_chunk_bytes = copylib_staging_bytes / copylib_queues_per_device;
+constexpr int64_t copylib_queues_per_device = 4;
+constexpr int64_t copylib_chunk_bytes = int64_t{1}*1024*1024;
 
 class copylib_event final : public async_event_impl {
   public:
